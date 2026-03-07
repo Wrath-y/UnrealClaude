@@ -4,6 +4,7 @@
 #include "MCPToolRegistry.h"
 #include "UnrealClaudeModule.h"
 #include "Async/Async.h"
+#include "Containers/Ticker.h"
 
 FMCPTaskQueue::FMCPTaskQueue(FMCPToolRegistry* InToolRegistry)
 	: ToolRegistry(InToolRegistry)
@@ -366,11 +367,16 @@ void FMCPTaskQueue::ExecuteTask(TSharedPtr<FMCPAsyncTask> Task)
 			[](FEvent* Event) { FPlatformProcess::ReturnSynchEventToPool(Event); });
 		TSharedPtr<TAtomic<bool>, ESPMode::ThreadSafe> bCompleted = MakeShared<TAtomic<bool>, ESPMode::ThreadSafe>(false);
 
-		AsyncTask(ENamedThreads::GameThread, [SharedResult, Tool, Params, CompletionEvent, bCompleted]()
+		// Use FTSTicker to dispatch to game thread at a safe point between subsystem ticks.
+		// AsyncTask(GameThread) can fire during streaming manager iteration, causing
+		// re-entrancy into LevelRenderAssetManagersLock (assertion crash).
+		FTSTicker::GetCoreTicker().AddTicker(TEXT("MCPTask_Execute"), 0.0f,
+			[SharedResult, Tool, Params, CompletionEvent, bCompleted](float) -> bool
 		{
 			*SharedResult = Tool->Execute(Params);
 			*bCompleted = true;
 			CompletionEvent->Trigger();
+			return false; // One-shot, don't reschedule
 		});
 
 		const bool bSignaled = CompletionEvent->Wait(Task->TimeoutMs);

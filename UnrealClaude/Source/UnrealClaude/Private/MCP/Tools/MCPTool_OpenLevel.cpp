@@ -7,6 +7,58 @@
 #include "UnrealEdGlobals.h"
 #include "Editor.h"
 #include "Misc/PackageName.h"
+#include "ContentStreaming.h"
+#include "UObject/UObjectGlobals.h"
+
+/**
+ * Wait for async loading and texture streaming to settle after a level load.
+ * Polls GetNumWantingResources() until stable, rather than using a fixed timeout.
+ * Returns the elapsed wait time in seconds.
+ *
+ * Prevents race conditions in the streaming manager's LevelRenderAssetManagersLock
+ * when subsequent tool calls arrive before the engine finishes processing the new level.
+ */
+static double WaitForLevelStreaming()
+{
+	const double StartTime = FPlatformTime::Seconds();
+	constexpr double MaxWaitSeconds = 30.0;
+	constexpr int32 RequiredStableChecks = 3;
+
+	// Phase 1: Wait for all async package loading to complete
+	FlushAsyncLoading();
+
+	if (IStreamingManager::HasShutdown())
+	{
+		return FPlatformTime::Seconds() - StartTime;
+	}
+
+	// Phase 2: Poll streaming manager until resources settle
+	IStreamingManager& StreamingMgr = IStreamingManager::Get();
+	int32 StableChecks = 0;
+
+	while (FPlatformTime::Seconds() - StartTime < MaxWaitSeconds)
+	{
+		// Process a batch of streaming work (up to 100ms per iteration)
+		StreamingMgr.BlockTillAllRequestsFinished(0.1f, false);
+
+		const bool bDoneStreaming = StreamingMgr.GetNumWantingResources() == 0;
+		const bool bDoneLoading = !IsAsyncLoading();
+
+		if (bDoneStreaming && bDoneLoading)
+		{
+			if (++StableChecks >= RequiredStableChecks)
+			{
+				break;
+			}
+		}
+		else
+		{
+			StableChecks = 0;
+		}
+	}
+
+	return FPlatformTime::Seconds() - StartTime;
+}
 
 FMCPToolResult FMCPTool_OpenLevel::Execute(const TSharedRef<FJsonObject>& Params)
 {
@@ -86,12 +138,16 @@ FMCPToolResult FMCPTool_OpenLevel::ExecuteOpen(const TSharedRef<FJsonObject>& Pa
 			TEXT("Failed to load level: '%s'"), *LevelPath));
 	}
 
+	// Wait for async loading and streaming to settle before returning
+	const double WaitTime = WaitForLevelStreaming();
+
 	// Build result
 	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
 	ResultData->SetStringField(TEXT("action"), TEXT("open"));
 	ResultData->SetStringField(TEXT("levelPath"), LevelPath);
 	ResultData->SetStringField(TEXT("mapName"), LoadedWorld->GetMapName());
 	ResultData->SetStringField(TEXT("worldName"), LoadedWorld->GetName());
+	ResultData->SetNumberField(TEXT("streaming_wait_seconds"), WaitTime);
 
 	return FMCPToolResult::Success(
 		FString::Printf(TEXT("Opened level: %s"), *LoadedWorld->GetMapName()), ResultData);
@@ -167,10 +223,14 @@ FMCPToolResult FMCPTool_OpenLevel::ExecuteNew(const TSharedRef<FJsonObject>& Par
 			TEXT("Failed to create map from template: '%s'"), *TemplateName));
 	}
 
+	// Wait for async loading and streaming to settle before returning
+	const double WaitTime = WaitForLevelStreaming();
+
 	TSharedPtr<FJsonObject> ResultData = MakeShared<FJsonObject>();
 	ResultData->SetStringField(TEXT("action"), TEXT("new"));
 	ResultData->SetStringField(TEXT("template"), TemplateName);
 	ResultData->SetStringField(TEXT("mapName"), NewWorld->GetMapName());
+	ResultData->SetNumberField(TEXT("streaming_wait_seconds"), WaitTime);
 
 	return FMCPToolResult::Success(
 		FString::Printf(TEXT("Created new map from template '%s': %s"), *TemplateName, *NewWorld->GetMapName()),

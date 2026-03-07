@@ -467,14 +467,12 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 
 	// Get property address and set value based on type
 	void* ValuePtr = Property->ContainerPtrToValuePtr<void>(TargetObject);
+	bool bPropertySet = false;
 
 	// Try numeric property
 	if (FNumericProperty* NumProp = CastField<FNumericProperty>(Property))
 	{
-		if (SetNumericPropertyValue(NumProp, ValuePtr, Value))
-		{
-			return true;
-		}
+		bPropertySet = SetNumericPropertyValue(NumProp, ValuePtr, Value);
 	}
 	// Try bool property
 	else if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Property))
@@ -483,21 +481,24 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 		if (Value->TryGetBool(BoolVal))
 		{
 			BoolProp->SetPropertyValue(ValuePtr, BoolVal);
-			return true;
+			bPropertySet = true;
 		}
-		// Fallback: coerce string "true"/"false"/"1"/"0" → bool
-		FString StrVal;
-		if (Value->TryGetString(StrVal))
+		else
 		{
-			if (StrVal.Equals(TEXT("true"), ESearchCase::IgnoreCase) || StrVal == TEXT("1"))
+			// Fallback: coerce string "true"/"false"/"1"/"0" → bool
+			FString StrVal;
+			if (Value->TryGetString(StrVal))
 			{
-				BoolProp->SetPropertyValue(ValuePtr, true);
-				return true;
-			}
-			if (StrVal.Equals(TEXT("false"), ESearchCase::IgnoreCase) || StrVal == TEXT("0"))
-			{
-				BoolProp->SetPropertyValue(ValuePtr, false);
-				return true;
+				if (StrVal.Equals(TEXT("true"), ESearchCase::IgnoreCase) || StrVal == TEXT("1"))
+				{
+					BoolProp->SetPropertyValue(ValuePtr, true);
+					bPropertySet = true;
+				}
+				else if (StrVal.Equals(TEXT("false"), ESearchCase::IgnoreCase) || StrVal == TEXT("0"))
+				{
+					BoolProp->SetPropertyValue(ValuePtr, false);
+					bPropertySet = true;
+				}
 			}
 		}
 	}
@@ -508,7 +509,7 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 		if (Value->TryGetString(StrVal))
 		{
 			StrProp->SetPropertyValue(ValuePtr, StrVal);
-			return true;
+			bPropertySet = true;
 		}
 	}
 	// Try name property
@@ -518,33 +519,47 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 		if (Value->TryGetString(StrVal))
 		{
 			NameProp->SetPropertyValue(ValuePtr, FName(*StrVal));
-			return true;
+			bPropertySet = true;
 		}
 	}
 	// Try object property (TObjectPtr<T>, UObject* references)
 	else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
 	{
-		if (SetObjectPropertyValue(ObjProp, ValuePtr, Value, OutError))
+		if (!SetObjectPropertyValue(ObjProp, ValuePtr, Value, OutError))
 		{
-			return true;
+			return false;
 		}
-		return false;
+		bPropertySet = true;
 	}
 	// Try struct property
 	else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
 	{
-		if (SetStructPropertyValue(StructProp, ValuePtr, Value))
+		bPropertySet = SetStructPropertyValue(StructProp, ValuePtr, Value);
+		if (!bPropertySet)
 		{
-			return true;
+			OutError = FString::Printf(TEXT("Failed to set struct property '%s' (type: F%s). Supported formats: JSON object with fields, hex color string, or UE text format like \"(X=1,Y=2,Z=3)\"."),
+				*PropertyPath, *StructProp->Struct->GetName());
+			return false;
 		}
-		OutError = FString::Printf(TEXT("Failed to set struct property '%s' (type: F%s). Supported formats: JSON object with fields, hex color string, or UE text format like \"(X=1,Y=2,Z=3)\"."),
-			*PropertyPath, *StructProp->Struct->GetName());
+	}
+
+	if (!bPropertySet)
+	{
+		OutError = FString::Printf(TEXT("Unsupported property type '%s' for: %s"),
+			*Property->GetCPPType(), *PropertyPath);
 		return false;
 	}
 
-	OutError = FString::Printf(TEXT("Unsupported property type '%s' for: %s"),
-		*Property->GetCPPType(), *PropertyPath);
-	return false;
+	// Notify engine systems (streaming, physics, navigation) about the property change.
+	// Without this, setting object references (e.g. StaticMeshComponent.StaticMesh) via
+	// raw reflection leaves the streaming manager unaware. When it later detects the
+	// inconsistency during IncrementalUpdate() (while LevelRenderAssetManagersLock is held),
+	// it crashes with an assertion. PostEditChangeProperty triggers the notification
+	// immediately, before IncrementalUpdate runs.
+	FPropertyChangedEvent PropertyChangedEvent(Property, EPropertyChangeType::ValueSet);
+	TargetObject->PostEditChangeProperty(PropertyChangedEvent);
+
+	return true;
 }
 
 bool FMCPTool_SetProperty::SetObjectPropertyValue(FObjectProperty* ObjProp, void* ValuePtr, const TSharedPtr<FJsonValue>& Value, FString& OutError)
