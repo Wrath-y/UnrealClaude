@@ -10,6 +10,58 @@ Copy this file to `CLAUDE.md` in the same directory and customize the build path
 
 **UnrealClaude** is an Unreal Engine 5.7 plugin that provides MCP (Model Context Protocol) integration, enabling Claude AI to interact directly with the Unreal Editor via REST API tools.
 
+### MCP Tool Priority
+
+When working with Unreal Editor content, ALWAYS prefer MCP tools over filesystem tools:
+- Use `asset_search` instead of Glob/Grep to find assets
+- Use `spawn_actor` instead of writing Python scripts to create actors
+- Use `get_level_actors` instead of reading level files to see what's in a scene
+- Use `blueprint_query` instead of reading .uasset files to inspect blueprints
+- MCP tools operate on the live editor state — filesystem tools see serialized data
+
+### Tool Router (MANDATORY)
+
+Domain-specific operations MUST go through the `unreal_ue` router tool. NEVER call these tools directly:
+- `blueprint_modify` → use `unreal_ue` with `domain: "blueprint"`
+- `anim_blueprint_modify` → use `unreal_ue` with `domain: "anim"`
+- `character` / `character_data` → use `unreal_ue` with `domain: "character"`
+- `enhanced_input` → use `unreal_ue` with `domain: "enhanced_input"`
+- `material` → use `unreal_ue` with `domain: "material"`
+- `asset` (create/import/export) → use `unreal_ue` with `domain: "asset"`
+
+Simple tools are called directly with `unreal_` prefix: `unreal_spawn_actor`, `unreal_move_actor`, `unreal_get_level_actors`, `unreal_asset_search`, `unreal_blueprint_query`, etc.
+
+**Router call format:**
+```json
+{
+  "domain": "blueprint",
+  "operation": "add_variable",
+  "params": { "blueprint_path": "/Game/BP_Example", "var_name": "Health", "var_type": "float" }
+}
+```
+
+### Parallel Tool Execution
+
+When performing complex Unreal tasks, use parallel MCP tool calls and subagents to maximize throughput.
+
+**Concurrency & Timeout Limits (CRITICAL):**
+- Unreal's task queue processes **max 4 concurrent tasks**. Extra calls queue automatically but add latency.
+- Keep parallel subagent count to **3 subagents max** (leaves 1 slot for the lead agent's own calls).
+- Timeout chain: Game thread dispatch = 30s → Task default = 2 min → Bridge async = 5 min.
+
+**Tool parallelization classes:**
+
+| Class | Tools | Rule |
+|-------|-------|------|
+| **Parallel-safe** (read-only) | asset_search, get_level_actors, blueprint_query, asset_dependencies, asset_referencers, capture_viewport, get_output_log | Call freely in parallel. No conflicts. |
+| **Per-object safe** (modifying) | spawn_actor, move_actor, set_property, blueprint_modify, material, character, character_data, asset, enhanced_input, anim_blueprint_modify | Parallelize on DIFFERENT actors/assets. Never modify same object from two calls. |
+| **Sequential only** | open_level, delete_actors, execute_script, cleanup_scripts, run_console_command | Must run alone. open_level invalidates all refs. |
+
+**When to use subagents (Task tool):**
+- Request maps to 3+ independent operations on different objects
+- Lead agent surveys first (read-only), plans names, spawns subagents, verifies results
+- NEVER spawn more than 3 subagents — the task queue limit is 4 concurrent tasks total
+
 ### Key Directories
 - `Source/UnrealClaude/Private/MCP/` - MCP server and tool implementations
 - `Source/UnrealClaude/Private/MCP/Tools/` - Individual MCP tools
@@ -119,12 +171,17 @@ The MCP bridge includes dynamic context files that provide accurate UE 5.7 API d
 ### Context Files Location
 ```
 Resources/mcp-bridge/contexts/
-├── animation.md   # Animation Blueprint, state machines, UAnimInstance
-├── blueprint.md   # Blueprint graphs, UK2Node, FBlueprintEditorUtils
-├── slate.md       # Slate UI widgets, SNew/SAssignNew patterns
-├── actor.md       # Actor spawning, components, transforms
-├── assets.md      # Asset loading, TSoftObjectPtr, async loading
-└── replication.md # Network replication, RPCs, DOREPLIFETIME
+├── actor.md                # Actor spawning, components, transforms
+├── animation.md            # Animation Blueprint, state machines, UAnimInstance
+├── assets.md               # Asset loading, TSoftObjectPtr, async loading
+├── blueprint.md            # Blueprint graphs, UK2Node, FBlueprintEditorUtils
+├── character.md            # Character movement, data assets, stats
+├── enhanced_input.md       # Enhanced Input actions, mapping contexts
+├── material.md             # Material instances, parameters, assignment
+├── parallel_workflows.md   # Parallel tool execution, subagent patterns
+├── replication.md          # Network replication, RPCs, DOREPLIFETIME
+├── slate.md                # Slate UI widgets, SNew/SAssignNew patterns
+└── ue-core-api.md          # Core UE 5.7 API reference (class hierarchy, specifiers)
 ```
 
 ### Maintaining Context Files

@@ -109,7 +109,37 @@ bool FMCPTool_SetProperty::NavigateToProperty(
 
 			if (bIsLastPart)
 			{
-				OutError = FString::Printf(TEXT("Property not found: %s on %s"), *PartName, *OutObject->GetClass()->GetName());
+				OutError = FString::Printf(TEXT("Property not found: '%s' on %s."), *PartName, *OutObject->GetClass()->GetName());
+
+				// List available properties (cap at 20)
+				TArray<FString> AvailableProps;
+				for (TFieldIterator<FProperty> It(OutObject->GetClass()); It; ++It)
+				{
+					if (AvailableProps.Num() >= 20) break;
+					AvailableProps.Add(It->GetName());
+				}
+				if (AvailableProps.Num() > 0)
+				{
+					OutError += FString::Printf(TEXT(" Available: %s"), *FString::Join(AvailableProps, TEXT(", ")));
+				}
+
+				// List available components if actor
+				if (AActor* AsActor = Cast<AActor>(OutObject))
+				{
+					TArray<FString> CompNames;
+					for (UActorComponent* Comp : AsActor->GetComponents())
+					{
+						if (Comp && CompNames.Num() < 15)
+						{
+							CompNames.Add(Comp->GetName());
+						}
+					}
+					if (CompNames.Num() > 0)
+					{
+						OutError += FString::Printf(TEXT(". Components: %s"), *FString::Join(CompNames, TEXT(", ")));
+					}
+				}
+
 				return false;
 			}
 			continue;
@@ -147,7 +177,7 @@ bool FMCPTool_SetProperty::TryNavigateToComponent(
 		{
 			if (bIsLastPart)
 			{
-				OutError = FString::Printf(TEXT("Cannot set component as value: %s"), *PartName);
+				OutError = FString::Printf(TEXT("Cannot set component '%s' directly. Use a property path like '%s.PropertyName'."), *PartName, *Comp->GetName());
 				return false;
 			}
 			CurrentObject = Comp;
@@ -191,6 +221,13 @@ bool FMCPTool_SetProperty::SetNumericPropertyValue(FNumericProperty* NumProp, vo
 			NumProp->SetFloatingPointPropertyValue(ValuePtr, DoubleVal);
 			return true;
 		}
+		// Fallback: coerce string "42.5" → double
+		FString StrVal;
+		if (Value->TryGetString(StrVal) && StrVal.IsNumeric())
+		{
+			NumProp->SetFloatingPointPropertyValue(ValuePtr, FCString::Atod(*StrVal));
+			return true;
+		}
 	}
 	else if (NumProp->IsInteger())
 	{
@@ -198,6 +235,13 @@ bool FMCPTool_SetProperty::SetNumericPropertyValue(FNumericProperty* NumProp, vo
 		if (Value->TryGetNumber(IntVal))
 		{
 			NumProp->SetIntPropertyValue(ValuePtr, IntVal);
+			return true;
+		}
+		// Fallback: coerce string "42" → int64
+		FString StrVal;
+		if (Value->TryGetString(StrVal) && StrVal.IsNumeric())
+		{
+			NumProp->SetIntPropertyValue(ValuePtr, FCString::Atoi64(*StrVal));
 			return true;
 		}
 	}
@@ -284,16 +328,21 @@ bool FMCPTool_SetProperty::SetStructPropertyValue(FStructProperty* StructProp, v
 	}
 
 	// FColor - uses uint8 values (0-255). Parse via double to handle JSON number types robustly.
+	// Accepts both uppercase (R,G,B,A) and lowercase (r,g,b,a) field names.
 	if (bIsFColor)
 	{
 		FColor Color;
 		double R = 0, G = 0, B = 0, A = 255;
-		(*ObjVal)->TryGetNumberField(TEXT("r"), R);
-		(*ObjVal)->TryGetNumberField(TEXT("g"), G);
-		(*ObjVal)->TryGetNumberField(TEXT("b"), B);
-		if (!(*ObjVal)->TryGetNumberField(TEXT("a"), A))
+		if (!(*ObjVal)->TryGetNumberField(TEXT("R"), R))
+			(*ObjVal)->TryGetNumberField(TEXT("r"), R);
+		if (!(*ObjVal)->TryGetNumberField(TEXT("G"), G))
+			(*ObjVal)->TryGetNumberField(TEXT("g"), G);
+		if (!(*ObjVal)->TryGetNumberField(TEXT("B"), B))
+			(*ObjVal)->TryGetNumberField(TEXT("b"), B);
+		if (!(*ObjVal)->TryGetNumberField(TEXT("A"), A))
 		{
-			A = 255.0;
+			if (!(*ObjVal)->TryGetNumberField(TEXT("a"), A))
+				A = 255.0;
 		}
 		Color.R = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(R), 0, 255));
 		Color.G = static_cast<uint8>(FMath::Clamp(FMath::RoundToInt(G), 0, 255));
@@ -304,15 +353,20 @@ bool FMCPTool_SetProperty::SetStructPropertyValue(FStructProperty* StructProp, v
 	}
 
 	// FLinearColor - uses float values (0.0-1.0)
+	// Accepts both uppercase (R,G,B,A) and lowercase (r,g,b,a) field names.
 	if (bIsLinearColor)
 	{
 		FLinearColor Color;
-		(*ObjVal)->TryGetNumberField(TEXT("r"), Color.R);
-		(*ObjVal)->TryGetNumberField(TEXT("g"), Color.G);
-		(*ObjVal)->TryGetNumberField(TEXT("b"), Color.B);
-		if (!(*ObjVal)->TryGetNumberField(TEXT("a"), Color.A))
+		if (!(*ObjVal)->TryGetNumberField(TEXT("R"), Color.R))
+			(*ObjVal)->TryGetNumberField(TEXT("r"), Color.R);
+		if (!(*ObjVal)->TryGetNumberField(TEXT("G"), Color.G))
+			(*ObjVal)->TryGetNumberField(TEXT("g"), Color.G);
+		if (!(*ObjVal)->TryGetNumberField(TEXT("B"), Color.B))
+			(*ObjVal)->TryGetNumberField(TEXT("b"), Color.B);
+		if (!(*ObjVal)->TryGetNumberField(TEXT("A"), Color.A))
 		{
-			Color.A = 1.0f;
+			if (!(*ObjVal)->TryGetNumberField(TEXT("a"), Color.A))
+				Color.A = 1.0f;
 		}
 		// Auto-normalize: if any color component > 1.5, assume 0-255 range
 		if (Color.R > 1.5f || Color.G > 1.5f || Color.B > 1.5f)
@@ -431,6 +485,21 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 			BoolProp->SetPropertyValue(ValuePtr, BoolVal);
 			return true;
 		}
+		// Fallback: coerce string "true"/"false"/"1"/"0" → bool
+		FString StrVal;
+		if (Value->TryGetString(StrVal))
+		{
+			if (StrVal.Equals(TEXT("true"), ESearchCase::IgnoreCase) || StrVal == TEXT("1"))
+			{
+				BoolProp->SetPropertyValue(ValuePtr, true);
+				return true;
+			}
+			if (StrVal.Equals(TEXT("false"), ESearchCase::IgnoreCase) || StrVal == TEXT("0"))
+			{
+				BoolProp->SetPropertyValue(ValuePtr, false);
+				return true;
+			}
+		}
 	}
 	// Try string property
 	else if (FStrProperty* StrProp = CastField<FStrProperty>(Property))
@@ -452,6 +521,15 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 			return true;
 		}
 	}
+	// Try object property (TObjectPtr<T>, UObject* references)
+	else if (FObjectProperty* ObjProp = CastField<FObjectProperty>(Property))
+	{
+		if (SetObjectPropertyValue(ObjProp, ValuePtr, Value, OutError))
+		{
+			return true;
+		}
+		return false;
+	}
 	// Try struct property
 	else if (FStructProperty* StructProp = CastField<FStructProperty>(Property))
 	{
@@ -467,4 +545,41 @@ bool FMCPTool_SetProperty::SetPropertyFromJson(UObject* Object, const FString& P
 	OutError = FString::Printf(TEXT("Unsupported property type '%s' for: %s"),
 		*Property->GetCPPType(), *PropertyPath);
 	return false;
+}
+
+bool FMCPTool_SetProperty::SetObjectPropertyValue(FObjectProperty* ObjProp, void* ValuePtr, const TSharedPtr<FJsonValue>& Value, FString& OutError)
+{
+	// Value should be a string path to the object
+	FString ObjectPath;
+	if (!Value->TryGetString(ObjectPath))
+	{
+		OutError = TEXT("Object property value must be a string asset path (e.g. \"/Game/Meshes/SM_Rock\")");
+		return false;
+	}
+
+	// Handle "None" or empty as null
+	if (ObjectPath.IsEmpty() || ObjectPath.Equals(TEXT("None"), ESearchCase::IgnoreCase))
+	{
+		ObjProp->SetObjectPropertyValue(ValuePtr, nullptr);
+		return true;
+	}
+
+	// Load the referenced object
+	UObject* ReferencedObject = LoadObject<UObject>(nullptr, *ObjectPath);
+	if (!ReferencedObject)
+	{
+		OutError = FString::Printf(TEXT("Failed to load object: %s"), *ObjectPath);
+		return false;
+	}
+
+	// Verify type compatibility
+	if (!ReferencedObject->IsA(ObjProp->PropertyClass))
+	{
+		OutError = FString::Printf(TEXT("Object type mismatch. Expected %s, got %s"),
+			*ObjProp->PropertyClass->GetName(), *ReferencedObject->GetClass()->GetName());
+		return false;
+	}
+
+	ObjProp->SetObjectPropertyValue(ValuePtr, ReferencedObject);
+	return true;
 }

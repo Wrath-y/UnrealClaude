@@ -25,8 +25,10 @@ public:
 			"- 'LightComponent.Intensity' - Light intensity\n"
 			"- 'LightComponent.LightColor' - Light color {R, G, B, A}\n"
 			"- 'StaticMeshComponent.RelativeScale3D' - Mesh scale\n"
+			"- 'StaticMeshComponent.StaticMesh' - Set mesh via asset path string\n"
 			"- 'RootComponent.RelativeLocation' - Root position\n\n"
-			"Value types: strings, numbers, booleans, objects (FVector, FRotator, FLinearColor), arrays.\n\n"
+			"Value types: strings, numbers, booleans, objects (FVector, FRotator, FLinearColor), "
+			"object references (asset path string e.g. \"/Game/Meshes/SM_Rock\"), arrays.\n\n"
 			"Returns: Confirmation of property change."
 		);
 		Info.Parameters = {
@@ -68,6 +70,9 @@ private:
 
 	/** Set a struct property value from JSON (FVector, FRotator, FLinearColor) */
 	bool SetStructPropertyValue(FStructProperty* StructProp, void* ValuePtr, const TSharedPtr<FJsonValue>& Value);
+
+	/** Set an object reference property from a string asset path */
+	bool SetObjectPropertyValue(FObjectProperty* ObjProp, void* ValuePtr, const TSharedPtr<FJsonValue>& Value, FString& OutError);
 
 	/** Helper to set a property value from JSON */
 	bool SetPropertyFromJson(UObject* Object, const FString& PropertyPath, const TSharedPtr<FJsonValue>& Value, FString& OutError);

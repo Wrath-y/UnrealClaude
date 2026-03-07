@@ -130,6 +130,25 @@ private:
 - Config files: `Config/`
 - Plugins: `Plugins/`
 
+## MCP Tool Router (UnrealClaude Plugin)
+
+If you are using the **UnrealClaude** plugin with Claude Code, domain-specific operations go through the `unreal_ue` router tool instead of calling underlying tools directly.
+
+**Router call format:**
+```json
+{
+  "domain": "blueprint",
+  "operation": "add_variable",
+  "params": { "blueprint_path": "/Game/BP_Example", "var_name": "Health", "var_type": "float" }
+}
+```
+
+**Available domains:** `blueprint`, `anim`, `character`, `enhanced_input`, `material`, `asset`
+
+Simple tools (spawn_actor, move_actor, get_level_actors, asset_search, blueprint_query, etc.) are called directly with the `unreal_` prefix.
+
+---
+
 ## Response Guidelines
 
 When providing code:

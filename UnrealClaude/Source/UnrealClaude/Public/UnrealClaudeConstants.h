@@ -190,6 +190,14 @@ namespace UnrealClaudeConstants
 			TEXT("asset_search"),
 			TEXT("asset_dependencies"),
 			TEXT("asset_referencers"),
+			TEXT("asset"),
+			// Character tools
+			TEXT("character"),
+			TEXT("character_data"),
+			// Enhanced Input tools
+			TEXT("enhanced_input"),
+			// Material tools
+			TEXT("material"),
 			// Level management tools
 			TEXT("open_level"),
 			// Task queue tools
