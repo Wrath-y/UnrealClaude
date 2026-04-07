@@ -2,11 +2,13 @@
 
 #include "ClaudeSubsystem.h"
 #include "ClaudeCodeRunner.h"
+#include "LiteLLMRunner.h"
 #include "ClaudeSessionManager.h"
 #include "ProjectContext.h"
 #include "ScriptExecutionManager.h"
 #include "UnrealClaudeModule.h"
 #include "UnrealClaudeConstants.h"
+#include "Misc/Paths.h"
 
 // Cached system prompt - static to avoid recreation on each call
 static const FString CachedUE57SystemPrompt = TEXT(R"(You are an expert Unreal Engine 5.7 developer assistant integrated directly into the UE Editor.
@@ -73,8 +75,22 @@ FClaudeCodeSubsystem& FClaudeCodeSubsystem::Get()
 
 FClaudeCodeSubsystem::FClaudeCodeSubsystem()
 {
-	Runner = MakeUnique<FClaudeCodeRunner>();
 	SessionManager = MakeUnique<FClaudeSessionManager>();
+
+	// Try LiteLLM first — if Config/litellm-config.json exists and is valid, use it.
+	// Otherwise fall back to the local Claude Code CLI runner.
+	FString LiteLLMConfigPath = FPaths::Combine(FPaths::ProjectDir(), TEXT("Config"), TEXT("litellm-config.json"));
+	FLiteLLMConfig LiteLLMConfig;
+	if (FLiteLLMRunner::TryLoadConfig(LiteLLMConfigPath, LiteLLMConfig))
+	{
+		UE_LOG(LogUnrealClaude, Log, TEXT("Using LiteLLM backend (model: %s)"), *LiteLLMConfig.Model);
+		Runner = MakeUnique<FLiteLLMRunner>(LiteLLMConfig);
+	}
+	else
+	{
+		UE_LOG(LogUnrealClaude, Log, TEXT("Using Claude Code CLI backend"));
+		Runner = MakeUnique<FClaudeCodeRunner>();
+	}
 }
 
 FClaudeCodeSubsystem::~FClaudeCodeSubsystem()

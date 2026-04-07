@@ -8,6 +8,7 @@
 // Forward declarations
 class FClaudeSessionManager;
 class FClaudeCodeRunner;
+class FLiteLLMRunner;
 
 /**
  * Options for sending a prompt to Claude
@@ -110,7 +111,8 @@ private:
 	/** Build prompt with conversation history context */
 	FString BuildPromptWithHistory(const FString& NewPrompt) const;
 
-	TUniquePtr<FClaudeCodeRunner> Runner;
+	/** Active runner — either FClaudeCodeRunner or FLiteLLMRunner depending on config */
+	TUniquePtr<IClaudeRunner> Runner;
 	TUniquePtr<FClaudeSessionManager> SessionManager;
 	FString CustomSystemPrompt;
 };

@@ -531,7 +531,9 @@ void SClaudeEditorWidget::NewSession()
 
 bool SClaudeEditorWidget::IsClaudeAvailable() const
 {
-	return FClaudeCodeRunner::IsClaudeAvailable();
+	// Delegate to whichever runner is currently active (LiteLLM or Claude CLI)
+	IClaudeRunner* ActiveRunner = FClaudeCodeSubsystem::Get().GetRunner();
+	return ActiveRunner && ActiveRunner->IsAvailable();
 }
 
 FText SClaudeEditorWidget::GetStatusText() const

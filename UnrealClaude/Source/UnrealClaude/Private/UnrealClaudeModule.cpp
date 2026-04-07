@@ -118,7 +118,8 @@ void FUnrealClaudeModule::StartupModule()
 		}),
 		FCanExecuteAction::CreateLambda([]()
 		{
-			return FClaudeCodeRunner::IsClaudeAvailable();
+			IClaudeRunner* ActiveRunner = FClaudeCodeSubsystem::Get().GetRunner();
+			return ActiveRunner && ActiveRunner->IsAvailable();
 		})
 	);
 
@@ -146,14 +147,27 @@ void FUnrealClaudeModule::StartupModule()
 	FLevelEditorModule& LevelEditorModule = FModuleManager::LoadModuleChecked<FLevelEditorModule>("LevelEditor");
 	LevelEditorModule.GetGlobalLevelEditorActions()->Append(PluginCommands.ToSharedRef());
 
-	// Check Claude availability
-	if (FClaudeCodeRunner::IsClaudeAvailable())
+	// Check runner availability (LiteLLM or Claude CLI depending on config)
 	{
-		UE_LOG(LogUnrealClaude, Log, TEXT("Claude CLI found at: %s"), *FClaudeCodeRunner::GetClaudePath());
-	}
-	else
-	{
-		UE_LOG(LogUnrealClaude, Warning, TEXT("Claude CLI not found. Please install with: npm install -g @anthropic-ai/claude-code"));
+		IClaudeRunner* ActiveRunner = FClaudeCodeSubsystem::Get().GetRunner();
+		if (ActiveRunner && ActiveRunner->IsAvailable())
+		{
+			// FClaudeCodeRunner exposes GetClaudePath() as a static — only log it for the CLI backend
+			if (FClaudeCodeRunner::IsClaudeAvailable())
+			{
+				UE_LOG(LogUnrealClaude, Log, TEXT("Claude CLI found at: %s"), *FClaudeCodeRunner::GetClaudePath());
+			}
+			else
+			{
+				UE_LOG(LogUnrealClaude, Log, TEXT("Backend runner is available (LiteLLM proxy)"));
+			}
+		}
+		else
+		{
+			UE_LOG(LogUnrealClaude, Warning,
+				TEXT("No backend available. Install Claude CLI (npm install -g @anthropic-ai/claude-code) "
+				     "or add Config/litellm-config.json."));
+		}
 	}
 
 	// Start MCP Server
