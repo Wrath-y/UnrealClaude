@@ -181,6 +181,17 @@ For full details, see [INSTALL_LINUX.md](INSTALL_LINUX.md).
 
 ## Usage
 
+### Add configuration files under the Config directory
+```json
+// litellm-config.json
+{
+  "base_url": "https://your.litellm.link",
+  "auth_token": "your_auth_key",
+  "model": "your_model"
+}
+
+```
+
 ### Opening the Claude Panel
 
  Menu → Tools → Claude Assistant
