@@ -11,6 +11,8 @@
 
 > **Supported Platforms:** Windows (Win64), Linux, and macOS (Apple Silicon). On Windows please use Claude Code 2.1.52 or older if you run into tool issues (2.1.71 seems ok from testing so far).
 
+> **Added support for litellm
+
 ## Overview
 
 UnrealClaude integrates the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) directly into the Unreal Engine 5.7 Editor. Instead of using the API directly, this plugin shells out to the `claude` command-line tool, leveraging your existing Claude Code authentication and capabilities.
