@@ -89,20 +89,8 @@ void FLiteLLMRunner::Cancel()
 
 FString FLiteLLMRunner::BuildRequestBody(const FClaudeRequestConfig& Config) const
 {
-	// Build messages array
+	// User message only — system goes as top-level field per Anthropic Messages API
 	TArray<TSharedPtr<FJsonValue>> Messages;
-
-	// System message (if any)
-	FString SystemText = Config.SystemPrompt;
-	if (!SystemText.IsEmpty())
-	{
-		TSharedPtr<FJsonObject> SysMsg = MakeShared<FJsonObject>();
-		SysMsg->SetStringField(TEXT("role"),    TEXT("system"));
-		SysMsg->SetStringField(TEXT("content"), SystemText);
-		Messages.Add(MakeShared<FJsonValueObject>(SysMsg));
-	}
-
-	// User message
 	{
 		TSharedPtr<FJsonObject> UserMsg = MakeShared<FJsonObject>();
 		UserMsg->SetStringField(TEXT("role"),    TEXT("user"));
@@ -112,10 +100,17 @@ FString FLiteLLMRunner::BuildRequestBody(const FClaudeRequestConfig& Config) con
 
 	// Root object
 	TSharedPtr<FJsonObject> Root = MakeShared<FJsonObject>();
-	Root->SetStringField(TEXT("model"),  LiteLLMConfig.Model);
-	Root->SetArrayField (TEXT("messages"), Messages);
+	Root->SetStringField(TEXT("model"),      LiteLLMConfig.Model);
+	Root->SetArrayField (TEXT("messages"),   Messages);
+	Root->SetNumberField(TEXT("max_tokens"), 8096);
 	// stream=false for simplicity; the response arrives in one shot
-	Root->SetBoolField  (TEXT("stream"), false);
+	Root->SetBoolField  (TEXT("stream"),     false);
+
+	// System prompt is a top-level field in Anthropic Messages API (not a message role)
+	if (!Config.SystemPrompt.IsEmpty())
+	{
+		Root->SetStringField(TEXT("system"), Config.SystemPrompt);
+	}
 
 	FString Body;
 	TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&Body);
@@ -129,47 +124,49 @@ FString FLiteLLMRunner::BuildRequestBody(const FClaudeRequestConfig& Config) con
 
 FString FLiteLLMRunner::ParseResponseBody(const FString& ResponseBody) const
 {
-	// Expected shape:
-	// {"choices":[{"message":{"role":"assistant","content":"..."},...}],...}
+	// Anthropic Messages API response shape:
+	// {"content":[{"type":"text","text":"..."}],"role":"assistant",...}
 	TSharedPtr<FJsonObject> Root;
 	TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(ResponseBody);
 	if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
 	{
-		UE_LOG(LogUnrealClaude, Warning, TEXT("LiteLLM: failed to parse response JSON"));
+		UE_LOG(LogUnrealClaude, Warning, TEXT("LiteLLM: failed to parse response JSON: %s"), *ResponseBody);
 		return FString();
 	}
 
-	const TArray<TSharedPtr<FJsonValue>>* Choices;
-	if (!Root->TryGetArrayField(TEXT("choices"), Choices) || Choices->Num() == 0)
+	// Check for API-level error
+	const TSharedPtr<FJsonObject>* ErrorObj;
+	if (Root->TryGetObjectField(TEXT("error"), ErrorObj))
 	{
-		// Check for error object
-		const TSharedPtr<FJsonObject>* ErrorObj;
-		if (Root->TryGetObjectField(TEXT("error"), ErrorObj))
+		FString ErrMsg;
+		(*ErrorObj)->TryGetStringField(TEXT("message"), ErrMsg);
+		UE_LOG(LogUnrealClaude, Warning, TEXT("LiteLLM: API error: %s"), *ErrMsg);
+		return FString::Printf(TEXT("[API error] %s"), *ErrMsg);
+	}
+
+	const TArray<TSharedPtr<FJsonValue>>* ContentArr;
+	if (!Root->TryGetArrayField(TEXT("content"), ContentArr) || ContentArr->Num() == 0)
+	{
+		UE_LOG(LogUnrealClaude, Warning, TEXT("LiteLLM: no content in response: %s"), *ResponseBody);
+		return FString();
+	}
+
+	// Concatenate all text blocks
+	FString Result;
+	for (const TSharedPtr<FJsonValue>& Item : *ContentArr)
+	{
+		const TSharedPtr<FJsonObject>* Block;
+		if (!Item->TryGetObject(Block)) { continue; }
+		FString Type;
+		(*Block)->TryGetStringField(TEXT("type"), Type);
+		if (Type == TEXT("text"))
 		{
-			FString ErrMsg;
-			(*ErrorObj)->TryGetStringField(TEXT("message"), ErrMsg);
-			UE_LOG(LogUnrealClaude, Warning, TEXT("LiteLLM error: %s"), *ErrMsg);
-			return FString::Printf(TEXT("[LiteLLM error] %s"), *ErrMsg);
+			FString Text;
+			(*Block)->TryGetStringField(TEXT("text"), Text);
+			Result += Text;
 		}
-		UE_LOG(LogUnrealClaude, Warning, TEXT("LiteLLM: no choices in response"));
-		return FString();
 	}
-
-	const TSharedPtr<FJsonObject>* ChoiceObj;
-	if (!(*Choices)[0]->TryGetObject(ChoiceObj))
-	{
-		return FString();
-	}
-
-	const TSharedPtr<FJsonObject>* MessageObj;
-	if (!(*ChoiceObj)->TryGetObjectField(TEXT("message"), MessageObj))
-	{
-		return FString();
-	}
-
-	FString Content;
-	(*MessageObj)->TryGetStringField(TEXT("content"), Content);
-	return Content;
+	return Result;
 }
 
 // ---------------------------------------------------------------------------
@@ -192,9 +189,17 @@ void FLiteLLMRunner::OnHttpRequestComplete(
 
 	if (!bWasSuccessful || !Response.IsValid())
 	{
-		AsyncTask(ENamedThreads::GameThread, [OnComplete]()
+		const int32 FailCode = Response.IsValid() ? Response->GetResponseCode() : -1;
+		const FString FailBody = Response.IsValid() ? Response->GetContentAsString() : TEXT("(no response)");
+		UE_LOG(LogUnrealClaude, Error,
+			TEXT("LiteLLM: HTTP request failed — bWasSuccessful=%d  ResponseValid=%d  HttpCode=%d  Body=%s"),
+			(int32)bWasSuccessful, (int32)Response.IsValid(), FailCode, *FailBody);
+		FString ErrMsg = FString::Printf(
+			TEXT("[LiteLLM] HTTP request failed (bSuccess=%d, code=%d). See Output Log for details."),
+			(int32)bWasSuccessful, FailCode);
+		AsyncTask(ENamedThreads::GameThread, [OnComplete, ErrMsg]()
 		{
-			OnComplete.ExecuteIfBound(TEXT("[LiteLLM] HTTP request failed (network error)"), false);
+			OnComplete.ExecuteIfBound(ErrMsg, false);
 		});
 		return;
 	}
@@ -254,12 +259,12 @@ bool FLiteLLMRunner::ExecuteAsync(
 		return false;
 	}
 
-	const FString Url = LiteLLMConfig.BaseUrl + TEXT("/v1/chat/completions");
+	const FString Url = LiteLLMConfig.BaseUrl + TEXT("/v1/messages");
 	const FString Body = BuildRequestBody(Config);
 
 	UE_LOG(LogUnrealClaude, Log,
-		TEXT("LiteLLM: POST %s  model=%s  prompt_len=%d"),
-		*Url, *LiteLLMConfig.Model, Config.Prompt.Len());
+		TEXT("LiteLLM: POST %s  model=%s  prompt_len=%d\nRequest Body: %s"),
+		*Url, *LiteLLMConfig.Model, Config.Prompt.Len(), *Body);
 
 	TSharedRef<IHttpRequest, ESPMode::ThreadSafe> HttpRequest =
 		FHttpModule::Get().CreateRequest();
@@ -270,6 +275,7 @@ bool FLiteLLMRunner::ExecuteAsync(
 	HttpRequest->SetHeader(TEXT("Authorization"),
 		FString::Printf(TEXT("Bearer %s"), *LiteLLMConfig.AuthToken));
 	HttpRequest->SetContentAsString(Body);
+	HttpRequest->SetTimeout(600.0f);  // 10-minute timeout for long model responses
 
 	// Store callbacks before binding the delegate (lambda captures them)
 	PendingOnComplete = OnComplete;
